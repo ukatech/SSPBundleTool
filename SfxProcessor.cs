@@ -44,9 +44,19 @@ namespace SSPBundleTool
             string tempFile = Path.GetTempFileName();
             // 拡張子を .7z にしないと 7z.exe が形式を認識しない場合があるため改名
             string temp7z = tempFile + ".7z";
-            // アーカイブ内でのファイル名を initial_install.nar に固定するため、
-            // 元のファイル名に関わらず同名の一時ファイルにコピーしてから追加する
-            string tempNar = Path.Combine(Path.GetTempPath(), "initial_install.nar");
+
+            // アーカイブ内でのファイル名を initial_install.nar に固定するための準備。
+            // データコピーを避けるため、ファイル名が異なる場合は同ディレクトリ内でリネームして追加し
+            // finally で必ず元の名前に戻す。ただし同名ファイルが既に存在する場合は一時ディレクトリへの
+            // コピーにフォールバックする。
+            string narDir = Path.GetDirectoryName(Path.GetFullPath(narFilePath));
+            bool alreadyCorrectName = string.Equals(
+                Path.GetFileName(narFilePath), "initial_install.nar",
+                StringComparison.OrdinalIgnoreCase);
+
+            string narPathForArchive = null;
+            string narWorkDir = null;
+            string renamedOriginalPath = null; // リネームした元のパス（finallyで戻すため）
             try
             {
                 progress.Report("7zアーカイブ部分を一時ファイルに書き出し中...");
@@ -56,11 +66,29 @@ namespace SSPBundleTool
                     fs.Write(inputBytes, sigOffset, inputBytes.Length - sigOffset);
                 }
 
-                File.Copy(narFilePath, tempNar, overwrite: true);
+                if (alreadyCorrectName)
+                {
+                    // ファイル名が既に initial_install.nar なのでそのまま使用
+                    narPathForArchive = narFilePath;
+                    narWorkDir = narDir;
+                }
+                else
+                {
+                    string targetPath = Path.Combine(narDir, "initial_install.nar");
+                    if (File.Exists(targetPath))
+                        throw new IOException(
+                            $"リネーム先のファイルが既に存在します。削除してから再試行してください。\n{targetPath}");
+
+                    // 同ディレクトリ内でリネーム（データコピーなし）
+                    File.Move(narFilePath, targetPath);
+                    renamedOriginalPath = narFilePath;
+                    narPathForArchive = targetPath;
+                    narWorkDir = narDir;
+                }
 
                 progress.Report("initial_install.nar をアーカイブに追加中...");
-                // -w で作業ディレクトリを一時フォルダに指定し、ファイル名のみがパスに使われるようにする
-                RunSevenZip(sevenZipExe, $"a \"{temp7z}\" \"{tempNar}\" -w\"{Path.GetTempPath()}\"", progress);
+                // -w で作業ディレクトリを指定し、ファイル名のみがパスに使われるようにする
+                RunSevenZip(sevenZipExe, $"a \"{temp7z}\" \"{narPathForArchive}\" -w\"{narWorkDir}\"", progress);
 
                 progress.Report($"出力ファイルを書き込み中: {outputSfxPath}");
                 byte[] newArchiveBytes = File.ReadAllBytes(temp7z);
@@ -76,8 +104,9 @@ namespace SSPBundleTool
             {
                 if (File.Exists(temp7z))
                     File.Delete(temp7z);
-                if (File.Exists(tempNar))
-                    File.Delete(tempNar);
+                // リネームしていた場合は元のファイル名に戻す
+                if (renamedOriginalPath != null && File.Exists(narPathForArchive))
+                    File.Move(narPathForArchive, renamedOriginalPath);
             }
         }
 
