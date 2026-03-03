@@ -1,0 +1,63 @@
+name: Build and Release
+
+on:
+  push:
+    paths:
+      - '**.cs'
+      - '**.csproj'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish --configuration Release --no-build --output ./publish
+
+      - name: Get date
+        id: date
+        shell: pwsh
+        run: |
+          echo "date=$(Get-Date -Format 'yyyyMMdd')" >> $env:GITHUB_OUTPUT
+          echo "datetime=$(Get-Date -Format 'yyyyMMddHHmmss')" >> $env:GITHUB_OUTPUT
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ./publish/* -DestinationPath ./SSPBundleTool.zip
+
+      - name: Delete old releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $releases = (gh release list --json tagName | ConvertFrom-Json).tagName
+          foreach ($tag in $releases) {
+            gh release delete $tag --yes --cleanup-tag
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ steps.date.outputs.datetime }}
+          name: SSPBundleTool ${{ steps.date.outputs.date }}
+          body: ''
+          files: ./SSPBundleTool.zip
